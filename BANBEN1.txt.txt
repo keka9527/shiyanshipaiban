@@ -1,0 +1,1333 @@
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { 
+  Users, Moon, Sun, Plane, GraduationCap, AlertCircle, 
+  Search, RefreshCw, Bot, CalendarDays, Edit3, X, Check, 
+  Download, Plus, Trash2, UserPlus, RotateCcw,
+  BarChart3, ChevronDown, Filter, ChevronLeft, ChevronRight,
+  Settings, Upload, FileSpreadsheet,
+  PieChart as PieChartIcon, Droplets, Sparkles, Zap,
+  Copy, ClipboardPaste, Square, CheckSquare,
+  GripVertical, Clock, FileJson 
+} from 'lucide-react';
+import { 
+  PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer
+} from 'recharts';
+import { toPng } from 'html-to-image';
+import { GoogleGenAI } from "@google/genai";
+
+// ==========================================
+// 🔴 配置区域 (已填入你的 API Key)
+// ==========================================
+const GOOGLE_API_KEY = "AIzaSyDiCQXe3pjsMgGfEKdZvii23r6KE5nbt54";
+
+// ==========================================
+// 1. 常量与配置
+// ==========================================
+
+const STORAGE_KEY_EMPLOYEES = 'editorial_schedule_employees_v3';
+const STORAGE_KEY_SCHEDULE = 'editorial_schedule_data_v3';
+const STORAGE_KEY_THEME = 'editorial_schedule_theme';
+
+const ShiftType = {
+  DAY: 'DAY',
+  NIGHT: 'NIGHT',
+  LEAVE: 'LEAVE',
+  TRIP: 'TRIP',
+  TRAINING: 'TRAINING',
+  OFF: 'OFF'
+};
+
+const DEFAULT_AREAS = [
+  '二区1F总成试验', '二区1F电机试验', '二区1F四驱试验', '二区3F试验', 
+  '三区1F电池试验', '三区2F电池试验', '三区3F电池试验', 
+  '长沙实验室', '设备保障', '出差'
+];
+
+const DEFAULT_ROLES = ['全部', '技师', '劳务工', '外协人员', '实习生'];
+
+const TEST_BENCHES = [
+  '2-105', '2-106', '2-107', '2-108', '2-109', '2-110', '2-111', '2-112',
+  '2-115', '2-116', '2-117', '2-119', '2-121', '2-122', '2-124', '2-125',
+  '2-126', '2-127', '2-129', '2-132', '2-134', '2-135',
+  '3-136', '3-103', '3-104', '3-105', '3-106', '3-108', '3-109', '3-110',
+  '3-111', '3-112', '3-202', '3-203', '3-204', '3-209', '3-301', '3-310',
+  '3-312', '3-313', '3-315', 'BMS实验室', '功率电子实验室', '性能试验室', '排放试验室'
+];
+
+const MOCK_EMPLOYEES = [
+  { id: '1', name: '张三', role: '技师', area: '二区1F总成试验' },
+  { id: '2', name: '李四', role: '劳务工', area: '二区3F试验' },
+  { id: '3', name: '王五', role: '技师', area: '二区1F电机试验' },
+  { id: '4', name: '赵六', role: '实习生', area: '三区1F电池试验' },
+  { id: '5', name: '陈七', role: '外协人员', area: '三区2F电池试验' },
+  { id: '6', name: '刘八', role: '劳务工', area: '二区3F试验' },
+  { id: '7', name: '孙九', role: '实习生', area: '三区3F电池试验' },
+  { id: '8', name: '周十', role: '劳务工', area: '三区1F电池试验' },
+  { id: '9', name: '吴一', role: '技师', area: '二区1F四驱试验' },
+  { id: '10', name: '郑二', role: '外协人员', area: '设备保障' },
+  { id: '11', name: '冯三', role: '技师', area: '长沙实验室' },
+  { id: '12', name: '褚四', role: '实习生', area: '出差' },
+];
+
+const INITIAL_SCHEDULE = [];
+
+const SHIFT_LABELS = {
+  [ShiftType.DAY]: '白班',
+  [ShiftType.NIGHT]: '夜班',
+  [ShiftType.LEAVE]: '请假',
+  [ShiftType.TRIP]: '出差',
+  [ShiftType.TRAINING]: '培训',
+  [ShiftType.OFF]: '休息'
+};
+
+const SHIFT_COLORS = {
+  [ShiftType.DAY]: 'bg-[#81C784] text-white border-transparent hover:brightness-110 shadow-sm',
+  [ShiftType.NIGHT]: 'bg-[#9C27B0] text-white border-transparent hover:brightness-110 shadow-sm',
+  [ShiftType.LEAVE]: 'bg-[#FF8A80] text-white border-transparent hover:brightness-110 shadow-sm',
+  [ShiftType.TRIP]: 'bg-[#FFB74D] text-white border-transparent hover:brightness-110 shadow-sm',
+  [ShiftType.TRAINING]: 'bg-[#4DD0E1] text-white border-transparent hover:brightness-110 shadow-sm',
+  [ShiftType.OFF]: 'bg-[#E0E0E0] text-slate-500 border-transparent hover:brightness-110'
+};
+
+const STATS_COLORS = {
+  [ShiftType.DAY]: '#4CAF50',
+  [ShiftType.NIGHT]: '#9C27B0',
+  [ShiftType.TRIP]: '#FFC107',
+  [ShiftType.TRAINING]: '#9C27B0',
+  [ShiftType.LEAVE]: '#F44336',
+  [ShiftType.OFF]: '#E0E0E0'
+};
+
+const analyzeSchedule = async (schedule, employees) => {
+  try {
+    const apiKey = GOOGLE_API_KEY;
+    if (!apiKey) {
+      return JSON.stringify({ 
+        summary: "未配置 API Key。请在代码顶部配置。", 
+        issues: [], 
+        recommendations: [] 
+      });
+    }
+    const ai = new GoogleGenAI({ apiKey });
+    const summary = schedule.map(s => {
+      const emp = employees.find(e => e.id === s.employeeId);
+      const benches = s.benchIds && s.benchIds.length > 0 ? `[台架: ${s.benchIds.join(', ')}]` : '';
+      return `${s.date}: ${emp?.name} (${emp?.area}) is on ${s.shift} ${benches}`;
+    }).join('\n');
+    
+    // 🟢 关键修改：强制要求中文回复
+    const prompt = `你是一个专业的排班管理助手。请根据以下排班数据生成一份 JSON 格式的分析报告。
+    
+    数据如下：
+    ${summary}
+
+    要求：
+    1. 必须返回纯 JSON 格式。
+    2. JSON 包含三个字段：
+       - summary: (字符串) 排班情况的总体概述。
+       - issues: (字符串数组) 发现的潜在问题或风险（如连续夜班、周末加班过多等）。
+       - recommendations: (字符串数组) 针对问题的具体优化建议。
+    3. 🔴 重要：所有分析内容（summary, issues, recommendations）必须完全使用中文进行回复。`;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: prompt,
+      config: { responseMimeType: "application/json" }
+    });
+    return response.text || "{}";
+  } catch (error) {
+    console.error(error);
+    return JSON.stringify({ summary: "分析服务连接失败", issues: ["无法连接到 AI 模型"], recommendations: ["请检查网络或 API Key 配置"] });
+  }
+};
+
+const statsCardColorMap = {
+  blue: 'border-blue-200/50 shadow-[0_4px_6px_-1px_rgba(59,130,246,0.1)]',
+  cyan: 'border-cyan-200/50 shadow-[0_4px_6px_-1px_rgba(6,182,212,0.1)]',
+  purple: 'border-purple-200/50 shadow-[0_4px_6px_-1px_rgba(168,85,247,0.1)]',
+  amber: 'border-amber-200/50 shadow-[0_4px_6px_-1px_rgba(245,158,11,0.1)]',
+  emerald: 'border-emerald-200/50 shadow-[0_4px_6px_-1px_rgba(16,185,129,0.1)]',
+  red: 'border-red-200/50 shadow-[0_4px_6px_-1px_rgba(239,68,68,0.1)]',
+  gray: 'border-gray-200/50 bg-gray-50/50',
+};
+
+const statsCardTextColorMap = {
+  blue: 'text-blue-600 dark:text-blue-400',
+  cyan: 'text-cyan-600 dark:text-cyan-400',
+  purple: 'text-purple-600 dark:text-purple-400',
+  amber: 'text-amber-600 dark:text-amber-400',
+  emerald: 'text-emerald-600 dark:text-emerald-400',
+  red: 'text-red-600 dark:text-red-400',
+  gray: 'text-gray-400',
+};
+
+const StatsCard = ({ title, value, icon, color, draggable, onDragStart, onDragOver, onDrop }) => {
+  const isPlaceholder = color === 'gray';
+  return (
+    <div 
+      draggable={draggable && !isPlaceholder}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`relative overflow-hidden rounded-xl border bg-skin-card p-4 flex items-center gap-4 transition-all ${!isPlaceholder ? 'hover:scale-[1.02] hover:shadow-lg' : 'opacity-60 border-dashed'} ${draggable ? 'cursor-move active:cursor-grabbing' : ''} ${statsCardColorMap[color] || statsCardColorMap.blue}`}
+    >
+      <div className="absolute top-0 right-0 p-1 opacity-10 transform translate-x-2 -translate-y-2 text-skin-base">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+          <path d="M0 0H40V40" stroke="currentColor" strokeWidth="4"/>
+        </svg>
+      </div>
+      <div className={`p-3 rounded-full ${isPlaceholder ? 'bg-gray-100' : 'bg-skin-fill'} ring-1 ring-skin-border`}>
+        {icon}
+      </div>
+      <div>
+        <div className={`text-3xl font-bold tracking-tighter font-sans ${statsCardTextColorMap[color] || statsCardTextColorMap.blue}`}>{value}</div>
+        <div className="text-xs uppercase tracking-widest opacity-70 font-semibold text-skin-muted truncate max-w-[100px]" title={title}>{title}</div>
+      </div>
+    </div>
+  );
+};
+
+// ==========================================
+// 主组件 (App)
+// ==========================================
+
+const App = () => {
+  const [currentTheme, setCurrentTheme] = useState(() => localStorage.getItem(STORAGE_KEY_THEME) || 'light');
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', currentTheme);
+    localStorage.setItem(STORAGE_KEY_THEME, currentTheme);
+  }, [currentTheme]);
+  
+  const [currentDate, setCurrentDate] = useState(new Date());
+  
+  const safeJsonParse = (key, fallback) => {
+    try {
+      const saved = localStorage.getItem(key);
+      if (!saved) return fallback;
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : fallback;
+    } catch (e) {
+      console.warn(`Load failed for ${key}, using default.`);
+      return fallback;
+    }
+  };
+
+  const [configAreas, setConfigAreas] = useState(() => safeJsonParse('sys_config_areas', DEFAULT_AREAS));
+  const [configRoles, setConfigRoles] = useState(() => safeJsonParse('sys_config_roles', DEFAULT_ROLES.filter(r => r !== '全部')));
+  const [configBenches, setConfigBenches] = useState(() => safeJsonParse('sys_config_benches', TEST_BENCHES));
+
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [newAreaInput, setNewAreaInput] = useState('');
+  const [newRoleInput, setNewRoleInput] = useState('');
+  const [newBenchInput, setNewBenchInput] = useState('');
+
+  const [employees, setEmployees] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_EMPLOYEES);
+      return saved ? JSON.parse(saved) : MOCK_EMPLOYEES;
+    } catch { return MOCK_EMPLOYEES; }
+  });
+  const [schedule, setSchedule] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_SCHEDULE);
+      return saved ? JSON.parse(saved) : INITIAL_SCHEDULE;
+    } catch { return INITIAL_SCHEDULE; }
+  });
+  
+  const [filterName, setFilterName] = useState('');
+  const [filterAreas, setFilterAreas] = useState([]);
+  const [isAreaFilterOpen, setIsAreaFilterOpen] = useState(false);
+  const [filterShift, setFilterShift] = useState('全部');
+
+  const [aiAnalysis, setAiAnalysis] = useState(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const dashboardRef = useRef(null);
+  const [isExporting, setIsExporting] = useState(false);
+  
+  const fileInputRef = useRef(null);
+
+  const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
+  const [statsDimension, setStatsDimension] = useState('month');
+  const [statsYear, setStatsYear] = useState(new Date().getFullYear());
+  const [statsMonth, setStatsMonth] = useState(new Date().getMonth() + 1);
+  const [statsQuarter, setStatsQuarter] = useState(Math.floor((new Date().getMonth() + 3) / 3));
+  const [statsSearchName, setStatsSearchName] = useState('');
+  const [statsFilterArea, setStatsFilterArea] = useState('全部');
+  const [statsSortConfig, setStatsSortConfig] = useState({ key: 'total', direction: 'desc' });
+  const [statsSelectedChartSegment, setStatsSelectedChartSegment] = useState(null);
+  const [selectedPersonStats, setSelectedPersonStats] = useState(null);
+
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+
+  const [isAutoModalOpen, setIsAutoModalOpen] = useState(false);
+  const [autoType, setAutoType] = useState('night');
+  const [autoCycle, setAutoCycle] = useState('2'); 
+  const [autoStartDate, setAutoStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [autoTargetArea, setAutoTargetArea] = useState('所有区域');
+
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingCell, setEditingCell] = useState(null);
+  const [tempShift, setTempShift] = useState(ShiftType.DAY);
+  const [tempBenchIds, setTempBenchIds] = useState([]);
+  const [customBench, setCustomBench] = useState('');
+  const [isAddingBench, setIsAddingBench] = useState(false);
+
+  const [benchClipboard, setBenchClipboard] = useState(null);
+
+  const [isEmpModalOpen, setIsEmpModalOpen] = useState(false);
+  const [editingEmp, setEditingEmp] = useState(null); 
+  const [tempEmpData, setTempEmpData] = useState({});
+
+  const [draggedRowId, setDraggedRowId] = useState(null);
+
+  const handleRowDragStart = (e, id) => {
+    setDraggedRowId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleRowDragOver = (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleRowDrop = (e, targetId) => {
+    e.preventDefault();
+    if (!draggedRowId || draggedRowId === targetId) return;
+    const newEmployees = [...employees];
+    const draggedIndex = newEmployees.findIndex(emp => emp.id === draggedRowId);
+    const targetIndex = newEmployees.findIndex(emp => emp.id === targetId);
+    if (draggedIndex === -1 || targetIndex === -1) return;
+    const [movedItem] = newEmployees.splice(draggedIndex, 1);
+    newEmployees.splice(targetIndex, 0, movedItem);
+    setEmployees(newEmployees);
+    setDraggedRowId(null);
+  };
+
+  useEffect(() => { localStorage.setItem(STORAGE_KEY_EMPLOYEES, JSON.stringify(employees)); }, [employees]);
+  useEffect(() => { localStorage.setItem(STORAGE_KEY_SCHEDULE, JSON.stringify(schedule)); }, [schedule]);
+  
+  useEffect(() => { if(Array.isArray(configAreas)) localStorage.setItem('sys_config_areas', JSON.stringify(configAreas)); }, [configAreas]);
+  useEffect(() => { if(Array.isArray(configRoles)) localStorage.setItem('sys_config_roles', JSON.stringify(configRoles)); }, [configRoles]);
+  useEffect(() => { if(Array.isArray(configBenches)) localStorage.setItem('sys_config_benches', JSON.stringify(configBenches)); }, [configBenches]);
+
+  const dates = useMemo(() => {
+    const curr = new Date(currentDate);
+    const day = curr.getDay();
+    const diff = curr.getDate() - day + (day === 0 ? -6 : 1); 
+    const monday = new Date(curr);
+    monday.setDate(diff);
+    const res = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      res.push(d.toISOString().split('T')[0]);
+    }
+    return res;
+  }, [currentDate]);
+
+  const filteredEmployees = useMemo(() => {
+    if (!Array.isArray(employees)) return [];
+    return employees.filter(emp => {
+      const matchName = emp.name.toLowerCase().includes(filterName.toLowerCase());
+      const matchArea = filterAreas.length === 0 || filterAreas.includes(emp.area);
+      let matchShift = true;
+      if (filterShift !== '全部') {
+        matchShift = dates.some(date => {
+          const entry = schedule.find(s => s.employeeId === emp.id && s.date === date);
+          const currentShift = entry ? entry.shift : ShiftType.DAY;
+          return currentShift === filterShift;
+        });
+      }
+      return matchName && matchArea && matchShift;
+    });
+  }, [employees, filterName, filterAreas, filterShift, schedule, dates]);
+
+  const stats = useMemo(() => {
+    const visibleSchedule = schedule.filter(s => dates.includes(s.date));
+    const getUniquePeopleCount = (shiftType) => {
+      const uniqueIds = new Set(visibleSchedule.filter(s => s.shift === shiftType).map(s => s.employeeId));
+      return uniqueIds.size;
+    };
+    return {
+      totalScheduled: employees.length,
+      currentOnDuty: getUniquePeopleCount(ShiftType.DAY),
+      currentNightShift: getUniquePeopleCount(ShiftType.NIGHT),
+      training: visibleSchedule.filter(s => s.shift === ShiftType.TRAINING).length,
+      onLeave: getUniquePeopleCount(ShiftType.LEAVE),
+      businessTrip: getUniquePeopleCount(ShiftType.TRIP),
+      rest: visibleSchedule.filter(s => s.shift === ShiftType.OFF).length,
+    };
+  }, [schedule, employees, dates]);
+
+  const areaStats = useMemo(() => {
+    const absentEmployees = new Set(
+      schedule
+        .filter(s => dates.includes(s.date) && (
+          s.shift === ShiftType.TRIP || 
+          s.shift === ShiftType.LEAVE ||
+          s.shift === ShiftType.TRAINING
+        ))
+        .map(s => s.employeeId)
+    );
+
+    const rawStats = configAreas.map(area => ({
+      area,
+      count: employees.filter(e => e.area === area && !absentEmployees.has(e.id)).length,
+      isPlaceholder: false
+    }));
+
+    const slots = rawStats.slice(0, 8); 
+    while(slots.length < 8) {
+      slots.push({ area: '空闲卡位', count: '-', isPlaceholder: true });
+    }
+    return slots;
+  }, [configAreas, employees, schedule, dates]);
+
+  const areaColors = ['blue', 'cyan', 'purple', 'emerald', 'amber', 'red'];
+
+  const handleDragStart = (e, index) => {
+    e.dataTransfer.setData('text/plain', index);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault(); 
+  };
+
+  const handleDrop = (e, dropIndex) => {
+    e.preventDefault();
+    const dragIndex = Number(e.dataTransfer.getData('text/plain'));
+    if (dragIndex === dropIndex) return;
+    const newAreas = [...configAreas];
+    if (dragIndex >= newAreas.length || dropIndex >= newAreas.length) return;
+    const [removed] = newAreas.splice(dragIndex, 1);
+    newAreas.splice(dropIndex, 0, removed);
+    setConfigAreas(newAreas);
+  };
+
+  const toggleAreaFilter = (area) => {
+    setFilterAreas(prev => {
+      if (prev.includes(area)) {
+        return prev.filter(a => a !== area);
+      } else {
+        return [...prev, area];
+      }
+    });
+  };
+
+  const { statisticsData, statsSummary } = useMemo(() => {
+    if (!isStatsModalOpen) return { statisticsData: [], statsSummary: null };
+    const relevantEntries = schedule.filter(entry => {
+      const [y, m] = entry.date.split('-').map(Number);
+      if (y !== statsYear) return false;
+      if (statsDimension === 'month') return m === statsMonth;
+      if (statsDimension === 'quarter') return Math.ceil(m / 3) === statsQuarter;
+      return true;
+    });
+    let targetEmployees = employees.filter(e => {
+        const matchName = e.name.includes(statsSearchName);
+        const matchArea = statsFilterArea === '全部' || e.area === statsFilterArea;
+        return matchName && matchArea;
+    });
+    let data = targetEmployees.map(emp => {
+      const empEntries = relevantEntries.filter(e => e.employeeId === emp.id);
+      const dayShift = empEntries.filter(e => e.shift === ShiftType.DAY).length;
+      const nightShift = empEntries.filter(e => e.shift === ShiftType.NIGHT).length;
+      const trip = empEntries.filter(e => e.shift === ShiftType.TRIP).length;
+      const fieldWork = empEntries.filter(e => e.shift === ShiftType.TRAINING).length;
+      const leave = empEntries.filter(e => e.shift === ShiftType.LEAVE).length;
+      const total = empEntries.filter(e => e.shift !== ShiftType.OFF).length;
+      const weekendOvertime = empEntries.filter(e => {
+         const d = new Date(e.date);
+         const day = d.getDay();
+         return (day === 0 || day === 6) && (e.shift === ShiftType.DAY || e.shift === ShiftType.NIGHT);
+      }).length;
+      return { id: emp.id, name: emp.name, area: emp.area, dayShift, nightShift, trip, fieldWork, leave, total, weekendOvertime, entries: empEntries };
+    });
+    if (statsSelectedChartSegment) {
+        data = data.filter(item => {
+            if (statsSelectedChartSegment === ShiftType.DAY) return item.dayShift > 0;
+            if (statsSelectedChartSegment === ShiftType.NIGHT) return item.nightShift > 0;
+            if (statsSelectedChartSegment === ShiftType.TRIP) return item.trip > 0;
+            if (statsSelectedChartSegment === ShiftType.TRAINING) return item.fieldWork > 0;
+            if (statsSelectedChartSegment === ShiftType.LEAVE) return item.leave > 0;
+            return true;
+        });
+    }
+    data.sort((a, b) => {
+      const valA = a[statsSortConfig.key]; const valB = b[statsSortConfig.key];
+      if (typeof valA === 'number' && typeof valB === 'number') return statsSortConfig.direction === 'asc' ? valA - valB : valB - valA;
+      return 0;
+    });
+    const totalManDays = data.reduce((acc, curr) => acc + curr.total, 0);
+    const totalDay = data.reduce((acc, curr) => acc + curr.dayShift, 0);
+    const totalNight = data.reduce((acc, curr) => acc + curr.nightShift, 0);
+    const totalTrip = data.reduce((acc, curr) => acc + curr.trip, 0);
+    const totalField = data.reduce((acc, curr) => acc + curr.fieldWork, 0);
+    const totalLeave = data.reduce((acc, curr) => acc + curr.leave, 0);
+    const summary = {
+        totalManDays,
+        dayRate: totalManDays ? Math.round((totalDay / totalManDays) * 100) : 0,
+        nightRate: totalManDays ? Math.round((totalNight / totalManDays) * 100) : 0,
+        leaveRate: totalManDays ? Math.round((totalLeave / totalManDays) * 100) : 0,
+        distribution: [
+            { name: '白班', value: totalDay, fill: STATS_COLORS[ShiftType.DAY], type: ShiftType.DAY },
+            { name: '夜班', value: totalNight, fill: STATS_COLORS[ShiftType.NIGHT], type: ShiftType.NIGHT },
+            { name: '出勤', value: totalTrip, fill: STATS_COLORS[ShiftType.TRIP], type: ShiftType.TRIP },
+            { name: '外勤', value: totalField, fill: STATS_COLORS[ShiftType.TRAINING], type: ShiftType.TRAINING },
+            { name: '请假', value: totalLeave, fill: STATS_COLORS[ShiftType.LEAVE], type: ShiftType.LEAVE },
+        ].filter(d => d.value > 0)
+    };
+    return { statisticsData: data, statsSummary: summary };
+  }, [isStatsModalOpen, schedule, employees, statsDimension, statsYear, statsMonth, statsQuarter, statsSearchName, statsFilterArea, statsSortConfig, statsSelectedChartSegment, configAreas]);
+
+  const handleStatsSort = (key) => {
+    setStatsSortConfig(prev => ({ key, direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc' }));
+  };
+  const handleExportCSV = () => {
+    const headers = ['姓名', '区域', '白班', '夜班', '出勤', '外勤', '请假', '周末加班', '总计'];
+    const rows = statisticsData.map(d => [d.name, d.area, d.dayShift, d.nightShift, d.trip, d.fieldWork, d.leave, d.weekendOvertime, d.total].join(','));
+    const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + headers.join(',') + "\n" + rows.join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a"); link.setAttribute("href", encodedUri); link.setAttribute("download", `排班统计.csv`);
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+  };
+  const displayBenches = useMemo(() => {
+    const extras = tempBenchIds.filter(id => !configBenches.includes(id));
+    return [...configBenches, ...extras];
+  }, [configBenches, tempBenchIds]);
+
+  const handleWeekChange = (offset) => {
+    setCurrentDate(prev => { const d = new Date(prev); d.setDate(d.getDate() + offset * 7); return d; });
+  };
+  const handleAnalyze = async () => {
+    setIsAnalyzing(true);
+    const visibleSchedule = schedule.filter(s => dates.includes(s.date));
+    const resultJson = await analyzeSchedule(visibleSchedule, employees);
+    try { setAiAnalysis(JSON.parse(resultJson)); } catch (e) { console.error(e); alert("AI分析出错"); } finally { setIsAnalyzing(false); }
+  };
+  
+  // 🟢 使用 html-to-image 的全页截图功能
+  const handleExportImage = async () => {
+    if (dashboardRef.current === null) return;
+    setIsExporting(true);
+    try {
+      // 增加延时确保渲染完成
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // 解决 Safari/Chrome 某些情况下的渲染问题
+      const dataUrl = await toPng(dashboardRef.current, { 
+        cacheBust: true, 
+        backgroundColor: currentTheme === 'dark' ? '#0f172a' : '#f8fafc', 
+        pixelRatio: 2, // 提高清晰度
+        filter: (node) => {
+            // 过滤掉不需要截图的元素（如果有）
+            return node.tagName !== 'i'; 
+        }
+      });
+      
+      const link = document.createElement('a'); 
+      link.download = `排班表-${dates[0]}.png`; 
+      link.href = dataUrl; 
+      link.click();
+    } catch (err) { 
+      console.error(err); 
+      alert('导出图片失败，请重试');
+    } finally { 
+      setIsExporting(false); 
+    }
+  };
+
+  const handleExportJSON = () => {
+    const dataToExport = {
+      employees,
+      schedule,
+      configAreas,
+      configRoles,
+      configBenches,
+      exportDate: new Date().toISOString()
+    };
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dataToExport, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `排班系统备份-${new Date().toISOString().split('T')[0]}.json`);
+    document.body.appendChild(downloadAnchorNode); 
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const handleImportJSON = (event) => {
+    const fileObj = event.target.files && event.target.files[0];
+    if (!fileObj) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const json = JSON.parse(e.target.result);
+        if (!json.employees || !json.schedule) {
+          alert("文件格式不正确，缺少关键数据(employees/schedule)");
+          return;
+        }
+
+        if (window.confirm("导入将覆盖当前所有排班、人员及配置数据，确定继续吗？")) {
+          if (json.employees) setEmployees(json.employees);
+          if (json.schedule) setSchedule(json.schedule);
+          if (json.configAreas) setConfigAreas(json.configAreas);
+          if (json.configRoles) setConfigRoles(json.configRoles);
+          if (json.configBenches) setConfigBenches(json.configBenches);
+
+          localStorage.setItem(STORAGE_KEY_EMPLOYEES, JSON.stringify(json.employees));
+          localStorage.setItem(STORAGE_KEY_SCHEDULE, JSON.stringify(json.schedule));
+          if(json.configAreas) localStorage.setItem('sys_config_areas', JSON.stringify(json.configAreas));
+          if(json.configRoles) localStorage.setItem('sys_config_roles', JSON.stringify(json.configRoles));
+          if(json.configBenches) localStorage.setItem('sys_config_benches', JSON.stringify(json.configBenches));
+
+          alert("数据导入成功！");
+        }
+      } catch (error) {
+        console.error(error);
+        alert("JSON 解析失败，请检查文件内容");
+      }
+    };
+    reader.readAsText(fileObj);
+    event.target.value = null; 
+  };
+
+  const handleResetData = () => {
+    if(window.confirm('确定重置所有数据吗？')) {
+      localStorage.removeItem(STORAGE_KEY_EMPLOYEES); localStorage.removeItem(STORAGE_KEY_SCHEDULE);
+      localStorage.removeItem('sys_config_areas'); localStorage.removeItem('sys_config_roles'); localStorage.removeItem('sys_config_benches');
+      window.location.reload();
+    }
+  };
+
+  // 🟢 新增：复制本周排班到下一周的功能
+  const handleCopyWeekToNext = () => {
+    if (!window.confirm("确定要把本周的排班信息完全复制到下一周吗？\n注意：下一周原有的排班将被覆盖。")) {
+      return;
+    }
+
+    // 1. 获取本周所有日期的字符串
+    // 2. 创建一个映射，将本周的日期对应到下周的日期
+    const dateMap = {}; // oldDate -> newDate
+    dates.forEach(dateStr => {
+      const d = new Date(dateStr);
+      d.setDate(d.getDate() + 7);
+      const newDateStr = d.toISOString().split('T')[0];
+      dateMap[dateStr] = newDateStr;
+    });
+
+    const nextWeekDates = Object.values(dateMap);
+
+    setSchedule(prev => {
+      // 3. 先移除下一周已有的排班数据，避免冲突或重复
+      const filteredSchedule = prev.filter(s => !nextWeekDates.includes(s.date));
+
+      // 4. 筛选出本周的排班数据
+      const currentWeekEntries = prev.filter(s => dates.includes(s.date));
+
+      // 5. 生成新的排班数据（日期推后7天，保持台架、区域、班次不变）
+      const newEntries = currentWeekEntries.map(entry => ({
+        ...entry,
+        date: dateMap[entry.date], // 使用映射后的新日期
+        // employeeId, shift, benchIds, location 等信息通过 ...entry 自动复制
+      }));
+
+      return [...filteredSchedule, ...newEntries];
+    });
+
+    alert("本周排班已成功复制到下一周！");
+  };
+
+  const handleAddConfigItem = (type, value) => {
+    const val = value.trim(); if (!val) return;
+    if (type === 'area' && !configAreas.includes(val)) { setConfigAreas(p => [...p, val]); setNewAreaInput(''); }
+    else if (type === 'role' && !configRoles.includes(val)) { setConfigRoles(p => [...p, val]); setNewRoleInput(''); }
+    else if (type === 'bench' && !configBenches.includes(val)) { setConfigBenches(p => [...p, val]); setNewBenchInput(''); }
+  };
+  const handleDeleteConfigItem = (type, value) => {
+      if (type === 'area') setConfigAreas(p => p.filter(i => i !== value));
+      else if (type === 'role') setConfigRoles(p => p.filter(i => i !== value));
+      else if (type === 'bench') setConfigBenches(p => p.filter(i => i !== value));
+  };
+  const getShiftFor = (empId, date) => schedule.find(s => s.employeeId === empId && s.date === date);
+  
+  const checkShiftConstraints = (empId, targetDateStr, newShift) => {
+    if (newShift !== ShiftType.NIGHT && newShift !== ShiftType.DAY) return null;
+    const emp = employees.find(e => e.id === empId);
+    if (!emp) return null;
+    const targetDate = new Date(targetDateStr);
+    if (newShift === ShiftType.NIGHT) {
+        const prevWeekDate = new Date(targetDate); prevWeekDate.setDate(targetDate.getDate() - 7);
+        const prev2WeekDate = new Date(targetDate); prev2WeekDate.setDate(targetDate.getDate() - 14);
+        const hasPrevNight = schedule.some(s => s.employeeId === empId && s.shift === ShiftType.NIGHT && s.date === prevWeekDate.toISOString().split('T')[0]);
+        const hasPrev2Night = schedule.some(s => s.employeeId === empId && s.shift === ShiftType.NIGHT && s.date === prev2WeekDate.toISOString().split('T')[0]);
+        if (hasPrevNight && hasPrev2Night) return `【${emp.name}】已连续两周排了夜班，是否继续？`;
+    }
+    const dayOfWeek = targetDate.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+        const prevWeekDate = new Date(targetDate); prevWeekDate.setDate(targetDate.getDate() - 7);
+        const hasPrevWeekendShift = schedule.some(s => s.employeeId === empId && (s.shift === ShiftType.DAY || s.shift === ShiftType.NIGHT) && s.date === prevWeekDate.toISOString().split('T')[0]);
+        if (hasPrevWeekendShift) return `【${emp.name}】上个周末已加班，是否继续？`;
+    }
+    return null;
+  };
+
+  const handleCellClick = (empId, date, currentShift, currentBenchIds) => {
+    setEditingCell({ empId, date, currentShift }); setTempShift(currentShift); setTempBenchIds(currentBenchIds || []);
+    setCustomBench(''); setIsAddingBench(false); setIsEditModalOpen(true);
+  };
+  const toggleBenchSelection = (bench) => {
+    setTempBenchIds(prev => prev.includes(bench) ? prev.filter(b => b !== bench) : [...prev, bench]);
+  };
+  
+  const handleCopyBenches = (e, benchIds) => {
+    e.stopPropagation(); 
+    if (benchIds && benchIds.length > 0) {
+      setBenchClipboard(benchIds);
+    }
+  };
+
+  const handlePasteBenches = (e, empId, date) => {
+    e.stopPropagation();
+    if (!benchClipboard) return;
+    setSchedule(prev => {
+      const newSchedule = [...prev];
+      const index = newSchedule.findIndex(s => s.employeeId === empId && s.date === date);
+      let newShift = ShiftType.DAY;
+      let location = employees.find(e => e.id === empId)?.area;
+      if (index >= 0) {
+        newSchedule[index] = { ...newSchedule[index], benchIds: benchClipboard };
+      } else {
+        newSchedule.push({ employeeId: empId, date: date, shift: newShift, benchIds: benchClipboard, location: location });
+      }
+      return newSchedule;
+    });
+  };
+
+  const handleSaveShift = () => {
+    if (!editingCell) return;
+    const warning = checkShiftConstraints(editingCell.empId, editingCell.date, tempShift);
+    if (warning) { if (!window.confirm(warning)) return; }
+    setSchedule(prev => {
+      const newSchedule = [...prev];
+      const index = newSchedule.findIndex(s => s.employeeId === editingCell.empId && s.date === editingCell.date);
+      const finalBenchIds = (tempShift === ShiftType.DAY || tempShift === ShiftType.NIGHT) ? tempBenchIds : undefined;
+      const newEntry = { employeeId: editingCell.empId, date: editingCell.date, shift: tempShift, benchIds: finalBenchIds, location: employees.find(e => e.id === editingCell.empId)?.area };
+      if (index >= 0) newSchedule[index] = newEntry; else newSchedule.push(newEntry);
+      return newSchedule;
+    });
+    setIsEditModalOpen(false); setEditingCell(null);
+  };
+  
+  const handleAddEmployee = () => { setEditingEmp(null); setTempEmpData({ name: '', role: configRoles[0]||'技师', area: configAreas[0]||'二区1F总成试验' }); setIsEmpModalOpen(true); };
+  
+  const handleBulkImport = () => {
+    if (!importText.trim()) return;
+    const names = importText.split(/[\n,，\s]+/).filter(n => n.trim().length > 0);
+    if (names.length === 0) { alert("请输入有效姓名"); return; }
+    const defaultArea = configAreas[0] || '二区1F总成试验'; 
+    const defaultRole = configRoles[0] || '技师';
+    const newEmployees = names.map(name => ({ 
+      id: Math.random().toString(36).substr(2, 9), 
+      name: name.trim(), 
+      role: defaultRole, 
+      area: defaultArea 
+    }));
+    setEmployees(prev => [...prev, ...newEmployees]); 
+    setImportText(''); 
+    setIsImportModalOpen(false); 
+    alert(`成功导入 ${newEmployees.length} 人`);
+  };
+
+  const handleEditEmployee = (emp) => { setEditingEmp(emp); setTempEmpData({ ...emp }); setIsEmpModalOpen(true); };
+  const handleSaveEmployee = () => {
+    if (!tempEmpData.name) { alert("请输入姓名"); return; }
+    const updatedName = tempEmpData.name.trim();
+    let updatedArea = tempEmpData.area || configAreas[0] || '二区1F总成试验';
+    const updatedRole = tempEmpData.role || configRoles[0] || '技师';
+    if (editingEmp) {
+      setEmployees(prev => prev.map(e => e.id === editingEmp.id ? { ...e, name: updatedName, area: updatedArea, role: updatedRole } : e));
+      setSchedule(prev => prev.map(s => s.employeeId === editingEmp.id ? { ...s, location: updatedArea } : s));
+    } else {
+      setEmployees(prev => [...prev, { id: Math.random().toString(36).substr(2, 9), name: updatedName, role: updatedRole, area: updatedArea }]);
+    }
+    setIsEmpModalOpen(false);
+  };
+  const executeDeleteEmployee = (targetId, targetName, e) => {
+    if (e) { e.stopPropagation(); e.preventDefault(); }
+    setTimeout(() => {
+        if (window.confirm(`确定要彻底删除人员 "${targetName}" 吗？`)) {
+            setEmployees(prev => prev.filter(e => e.id !== targetId));
+            setSchedule(prev => prev.filter(s => s.employeeId !== targetId));
+            if (editingEmp?.id === targetId) { setIsEmpModalOpen(false); setEditingEmp(null); }
+        }
+    }, 10);
+  };
+
+  const handleAutoGenerator = () => {
+      const startDate = new Date(autoStartDate);
+      const cycleDays = autoCycle === '1' ? 7 : 14;
+      let newSchedule = [...schedule];
+      const targetEmployees = autoTargetArea === '所有区域' ? employees : employees.filter(e => e.area === autoTargetArea);
+      if (targetEmployees.length === 0) { alert("该区域没有人员"); return; }
+      if (autoType === 'night') {
+          const areasToProcess = autoTargetArea === '所有区域' ? configAreas : [autoTargetArea];
+          areasToProcess.forEach(area => {
+             const areaEmployees = targetEmployees.filter(e => e.area === area);
+             if (areaEmployees.length === 0) return;
+             areaEmployees.sort((a, b) => {
+                 const countA = schedule.filter(s => s.employeeId === a.id && s.shift === ShiftType.NIGHT).length;
+                 const countB = schedule.filter(s => s.employeeId === b.id && s.shift === ShiftType.NIGHT).length;
+                 return countA - countB;
+             });
+             const targetEmp = areaEmployees[0];
+             for(let i=0; i<cycleDays; i++) {
+                 const d = new Date(startDate); d.setDate(startDate.getDate() + i);
+                 const dateStr = d.toISOString().split('T')[0]; const dayOfWeek = d.getDay();
+                 if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+                     const existing = newSchedule.find(s => s.employeeId === targetEmp.id && s.date === dateStr);
+                     if (existing && (existing.shift === ShiftType.LEAVE || existing.shift === ShiftType.TRIP)) continue;
+                     newSchedule = newSchedule.filter(s => !(s.employeeId === targetEmp.id && s.date === dateStr));
+                     newSchedule.push({ employeeId: targetEmp.id, date: dateStr, shift: ShiftType.NIGHT, location: targetEmp.area });
+                 }
+             }
+          });
+          alert(`已为 ${autoTargetArea} 夜班负荷最少的人员分配了 ${autoCycle} 周夜班`);
+      } else {
+          for(let i=0; i<14; i++) {
+              const d = new Date(startDate); d.setDate(startDate.getDate() + i); const dayOfWeek = d.getDay();
+              if (dayOfWeek === 0 || dayOfWeek === 6) {
+                  const dateStr = d.toISOString().split('T')[0];
+                  const sortedEmps = [...targetEmployees].sort((a, b) => {
+                      const countA = newSchedule.filter(s => s.employeeId === a.id && (new Date(s.date).getDay()===0 || new Date(s.date).getDay()===6) && s.shift!==ShiftType.OFF).length;
+                      const countB = newSchedule.filter(s => s.employeeId === b.id && (new Date(s.date).getDay()===0 || new Date(s.date).getDay()===6) && s.shift!==ShiftType.OFF).length;
+                      return countA - countB;
+                  });
+                  [0, 1].forEach(idx => {
+                      if (sortedEmps[idx]) {
+                          const existing = newSchedule.find(s => s.employeeId === sortedEmps[idx].id && s.date === dateStr);
+                          if (existing && (existing.shift === ShiftType.LEAVE || existing.shift === ShiftType.TRIP)) return;
+                          newSchedule = newSchedule.filter(s => !(s.employeeId === sortedEmps[idx].id && s.date === dateStr));
+                          newSchedule.push({ employeeId: sortedEmps[idx].id, date: dateStr, shift: ShiftType.DAY, location: sortedEmps[idx].area });
+                      }
+                  });
+              }
+          }
+          alert(`已为 ${autoTargetArea} 自动分配未来两周的周末加班`);
+      }
+      setSchedule(newSchedule); setIsAutoModalOpen(false);
+  };
+
+  const daysMap = { 0: '周日', 1: '周一', 2: '周二', 3: '周三', 4: '周四', 5: '周五', 6: '周六' };
+
+  return (
+    <div id="dashboard-container" ref={dashboardRef} className="min-h-screen w-full text-skin-base font-sans selection:bg-cyan-200 selection:text-cyan-900 p-4 md:p-6 flex flex-col gap-6 bg-skin-fill transition-colors duration-300">
+      
+      <div className="flex flex-col gap-6 bg-skin-fill">
+        
+        {/* Header */}
+        <header className="relative rounded-2xl bg-skin-card border border-skin-border p-6 shadow-md flex flex-col md:flex-row justify-between items-center gap-4 overflow-visible transition-colors duration-300">
+           <div className="relative z-10">
+             <h1 className="text-3xl font-bold text-skin-base tracking-tight flex items-center gap-3">
+               <div className="p-2 bg-gradient-to-br from-cyan-400 to-blue-500 rounded-lg text-white shadow-lg">
+                 <CalendarDays className="w-6 h-6" />
+               </div>
+               实验室人员排班状态看板
+             </h1>
+             <p className="text-skin-muted text-sm mt-1 font-mono flex items-center gap-4">
+               <span>系统状态: 在线</span>
+               <span className="w-px h-3 bg-skin-border"></span>
+               <span>{new Date().toLocaleDateString('zh-CN')}</span>
+               <span className="w-px h-3 bg-skin-border"></span>
+               <span></span>
+             </p>
+           </div>
+           
+           <div className="relative z-10 flex items-center gap-3 flex-wrap justify-end">
+             <div className="flex bg-skin-fill rounded-lg p-1 border border-skin-border">
+                <button onClick={() => setCurrentTheme('light')} className={`p-2 rounded-md transition-all ${currentTheme === 'light' ? 'bg-skin-card text-emerald-600 shadow-sm' : 'text-skin-muted hover:text-skin-base'}`} title="清新浅色"><Sun className="w-4 h-4" /></button>
+                <button onClick={() => setCurrentTheme('ocean')} className={`p-2 rounded-md transition-all ${currentTheme === 'ocean' ? 'bg-skin-card text-cyan-600 shadow-sm' : 'text-skin-muted hover:text-skin-base'}`} title="科技深蓝"><Droplets className="w-4 h-4" /></button>
+                <button onClick={() => setCurrentTheme('dark')} className={`p-2 rounded-md transition-all ${currentTheme === 'dark' ? 'bg-skin-card text-blue-400 shadow-sm' : 'text-skin-muted hover:text-skin-base'}`} title="极夜深色"><Moon className="w-4 h-4" /></button>
+             </div>
+             <div className="w-px h-6 bg-skin-border mx-1"></div>
+             <button onClick={() => setIsAutoModalOpen(true)} className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-600 hover:to-indigo-600 text-white rounded-lg transition-all shadow-md font-bold"><Sparkles className="w-5 h-5" /> 智能排班</button>
+             <button onClick={() => setIsConfigModalOpen(true)} className="flex items-center gap-2 px-4 py-2.5 text-skin-muted hover:text-skin-base hover:bg-skin-fill rounded-lg transition-all border border-transparent hover:border-skin-border"><Settings className="w-5 h-5" />字段管理</button>
+             <button onClick={() => setIsStatsModalOpen(true)} className="flex items-center gap-2 px-4 py-2.5 text-skin-muted hover:text-skin-base hover:bg-skin-fill rounded-lg transition-all border border-transparent hover:border-skin-border"><BarChart3 className="w-5 h-5 text-emerald-500" />统计</button>
+
+             {/* 🟢 导出/导入按钮区域 */}
+             <button onClick={handleExportJSON} className="flex items-center gap-2 px-4 py-2.5 text-skin-muted hover:text-skin-base hover:bg-skin-fill rounded-lg transition-all border border-transparent hover:border-skin-border" title="备份数据为JSON"><FileJson className="w-5 h-5" />导出数据</button>
+             <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-4 py-2.5 text-skin-muted hover:text-skin-base hover:bg-skin-fill rounded-lg transition-all border border-transparent hover:border-skin-border" title="恢复JSON备份数据"><Upload className="w-5 h-5" />导入数据</button>
+             <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImportJSON} />
+             
+             {/* 🟢 新增：复制本周到下一周按钮 */}
+             <button onClick={handleCopyWeekToNext} className="flex items-center gap-2 px-4 py-2.5 text-skin-muted hover:text-skin-base hover:bg-skin-fill rounded-lg transition-all border border-transparent hover:border-skin-border" title="复制本周排班到下一周">
+                 <Copy className="w-5 h-5 text-orange-500" />
+                 复制本周
+             </button>
+             {/* 🟢 结束 */}
+
+             <button onClick={handleResetData} className="p-2.5 text-skin-muted hover:text-red-500 hover:bg-red-50 rounded-lg transition-all" title="重置"><RotateCcw className="w-5 h-5" /></button>
+             <button onClick={handleExportImage} disabled={isExporting} className="flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold bg-skin-card hover:bg-skin-fill text-cyan-600 border border-cyan-200 transition-all shadow-sm">{isExporting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}{isExporting ? '生成中...' : '图片导出'}</button>
+             <button onClick={handleAnalyze} disabled={isAnalyzing} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-all duration-300 shadow-md ${isAnalyzing ? 'bg-blue-100 text-blue-400 cursor-not-allowed' : 'bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white'}`}>{isAnalyzing ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Bot className="w-5 h-5" />} AI分析</button>
+           </div>
+        </header>
+
+        <main className="flex-1 rounded-2xl bg-skin-card border border-skin-border shadow-lg overflow-hidden flex flex-col transition-colors duration-300">
+          {/* Visualization Header */}
+          <div className="p-6 border-b border-skin-border bg-skin-fill flex flex-col gap-4 shrink-0 transition-colors duration-300">
+              <h2 className="text-skin-base font-bold flex items-center gap-2"><div className="w-1 h-5 bg-cyan-500 rounded-full" />本周状态</h2>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                <StatsCard title="总人数" value={stats.totalScheduled} icon={<Users className="w-5 h-5 text-blue-500" />} color="blue" />
+                <StatsCard title="本周白班" value={stats.currentOnDuty} icon={<Sun className="w-5 h-5 text-emerald-500" />} color="emerald" />
+                <StatsCard title="本周晚班" value={stats.currentNightShift} icon={<Moon className="w-5 h-5 text-purple-500" />} color="purple" />
+                <StatsCard title="外勤" value={stats.training} icon={<GraduationCap className="w-5 h-5 text-cyan-500" />} color="cyan" />
+                <StatsCard title="本周请假" value={stats.onLeave} icon={<AlertCircle className="w-5 h-5 text-red-500" />} color="red" />
+                <StatsCard title="本周出差" value={stats.businessTrip} icon={<Plane className="w-5 h-5 text-amber-500" />} color="amber" />
+              </div>
+              <div className="mt-2 pt-4 border-t border-skin-border">
+                  <h3 className="text-skin-base font-bold flex items-center gap-2 mb-3"><div className="w-1 h-5 bg-cyan-500 rounded-full" />区域统计</h3>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+                      {areaStats.map((stat, index) => {
+                        const isRealArea = index < configAreas.length;
+                        return (
+                          <StatsCard 
+                            key={`${stat.area}-${index}`} 
+                            title={stat.area} 
+                            value={stat.count} 
+                            icon={<Users className="w-4 h-4 text-skin-muted" />} 
+                            color={stat.isPlaceholder ? 'gray' : areaColors[index % areaColors.length]} 
+                            draggable={isRealArea} 
+                            onDragStart={(e) => isRealArea && handleDragStart(e, index)}
+                            onDragOver={handleDragOver}
+                            onDrop={(e) => isRealArea && handleDrop(e, index)}
+                        />
+                        );
+                      })}
+                  </div>
+              </div>
+          </div>
+
+          {/* Toolbar */}
+          <div className="border-b border-skin-border bg-skin-card shrink-0 transition-colors duration-300">
+            {aiAnalysis && (
+              <div className="m-4 rounded-xl bg-blue-50/50 border border-blue-200 p-4 relative animate-in fade-in slide-in-from-top-4 duration-500">
+                <button 
+                  onClick={() => setAiAnalysis(null)} 
+                  className="absolute top-3 right-3 p-1 text-blue-400 hover:text-blue-600 hover:bg-blue-100 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+                <div className="flex items-start gap-4">
+                  <div className="p-2 bg-blue-100 rounded-lg border border-blue-200">
+                      <Bot className="w-6 h-6 text-blue-600" />
+                  </div>
+                  <div className="space-y-2 w-full">
+                    <h3 className="font-bold text-blue-800">AI 优化建议报告</h3>
+                    <p className="text-sm text-skin-base"><span className="font-semibold text-cyan-700">排班概况:</span> {aiAnalysis.summary}</p>
+                    {aiAnalysis.issues && aiAnalysis.issues.length > 0 && (
+                        <div className="text-sm text-red-700 mt-2">
+                          <span className="font-semibold text-red-800">潜在风险:</span>
+                          <ul className="list-disc list-inside opacity-90">
+                            {aiAnalysis.issues.map((iss, i) => <li key={i}>{iss}</li>)}
+                          </ul>
+                        </div>
+                    )}
+                    {aiAnalysis.recommendations && aiAnalysis.recommendations.length > 0 && (
+                        <div className="text-sm text-emerald-700 mt-2">
+                          <span className="font-semibold text-emerald-800">优化建议:</span>
+                          <ul className="list-disc list-inside opacity-90">
+                            {aiAnalysis.recommendations.map((rec, i) => <li key={i}>{rec}</li>)}
+                          </ul>
+                        </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="p-5 flex flex-wrap gap-4 items-center justify-between">
+                <div className="flex items-center gap-4 text-lg font-semibold text-skin-base">
+                  <div className="flex items-center gap-2"><div className="w-1.5 h-6 bg-gradient-to-b from-cyan-400 to-blue-600 rounded-full" />排班详情</div>
+                  <div className="flex items-center bg-skin-fill rounded-lg border border-skin-border p-1 gap-1">
+                    <button onClick={() => handleWeekChange(-1)} className="p-1 hover:bg-skin-card rounded"><ChevronLeft className="w-4 h-4" /></button>
+                    
+                    <div className="relative group px-2 flex items-center gap-2 cursor-pointer rounded hover:bg-skin-card transition-all py-1">
+                      <CalendarDays className="w-5 h-5 text-cyan-600" />
+                      <span className="text-lg font-mono text-skin-base group-hover:text-cyan-600 transition-colors">
+                        {dates[0].slice(5)} ~ {dates[6].slice(5)}
+                      </span>
+                      <Edit3 className="w-4 h-4 text-skin-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+                      <input 
+                        type="date"
+                        className="absolute inset-0 opacity-0 cursor-pointer z-20"
+                        onChange={(e) => {
+                          if (e.target.value) setCurrentDate(new Date(e.target.value));
+                        }}
+                      />
+                    </div>
+
+                    <button onClick={() => handleWeekChange(1)} className="p-1 hover:bg-skin-card rounded"><ChevronRight className="w-4 h-4" /></button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative"><Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-skin-muted" /><input type="text" placeholder="搜索..." className="pl-9 pr-4 py-1.5 bg-skin-card border border-skin-border rounded-lg text-sm w-32" value={filterName} onChange={(e) => setFilterName(e.target.value)} /></div>
+                  
+                  <div className="relative">
+                    <Filter className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-skin-muted z-10 pointer-events-none" />
+                    <button 
+                      onClick={() => setIsAreaFilterOpen(!isAreaFilterOpen)}
+                      className="pl-9 pr-8 py-1.5 bg-skin-card border border-skin-border rounded-lg text-sm cursor-pointer min-w-[120px] text-left flex items-center justify-between"
+                    >
+                      <span className="truncate max-w-[100px]">
+                        {filterAreas.length === 0 ? "全部区域" : `已选 ${filterAreas.length} 项`}
+                      </span>
+                      <ChevronDown className="w-3 h-3 text-skin-muted" />
+                    </button>
+                    
+                    {isAreaFilterOpen && (
+                      <>
+                        <div className="fixed inset-0 z-20" onClick={() => setIsAreaFilterOpen(false)} />
+                        <div className="absolute top-full left-0 mt-1 w-56 bg-skin-card border border-skin-border rounded-lg shadow-xl z-30 max-h-64 overflow-y-auto py-1">
+                           <div className="px-3 py-2 border-b border-skin-border flex justify-between items-center">
+                             <span className="text-xs font-bold text-skin-muted">选择显示区域</span>
+                             <button onClick={() => setFilterAreas([])} className="text-xs text-blue-500 hover:underline">重置</button>
+                           </div>
+                           {configAreas.map(area => {
+                             const isSelected = filterAreas.includes(area);
+                             return (
+                               <div 
+                                 key={area} 
+                                 onClick={() => toggleAreaFilter(area)}
+                                 className={`px-3 py-2 flex items-center gap-2 cursor-pointer hover:bg-skin-hover-fill text-sm ${isSelected ? 'text-blue-600 font-medium' : 'text-skin-base'}`}
+                               >
+                                 {isSelected ? <CheckSquare className="w-4 h-4 text-blue-600" /> : <Square className="w-4 h-4 text-skin-muted" />}
+                                 {area}
+                               </div>
+                             );
+                           })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  
+                  <div className="relative">
+                    <Clock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-skin-muted" />
+                    <select 
+                      className="pl-9 pr-8 py-1.5 bg-skin-card border border-skin-border rounded-lg text-sm appearance-none cursor-pointer" 
+                      value={filterShift} 
+                      onChange={(e) => setFilterShift(e.target.value)}
+                    >
+                        <option value="全部">全部班次</option>
+                        <option value={ShiftType.DAY}>白班</option>
+                        <option value={ShiftType.NIGHT}>夜班</option>
+                        <option value={ShiftType.TRIP}>出差</option>
+                        <option value={ShiftType.TRAINING}>培训</option>
+                        <option value={ShiftType.LEAVE}>请假</option>
+                    </select>
+                  </div>
+
+                  <div className="h-6 w-px bg-skin-border mx-1" />
+                  <button onClick={handleAddEmployee} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50/50 hover:bg-blue-100 text-blue-600 border border-blue-200/50 rounded-lg text-sm"><UserPlus className="w-4 h-4" />新增</button>
+                  <button onClick={() => setIsImportModalOpen(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-skin-card hover:bg-skin-fill text-skin-muted border border-skin-border rounded-lg text-sm"><Upload className="w-4 h-4" />导入</button>
+                </div>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="flex-1 overflow-auto bg-skin-card relative min-h-[500px] transition-colors duration-300">
+            <table className="w-full text-left border-collapse">
+              <thead className="sticky top-0 z-20 shadow-sm transition-colors duration-300">
+                <tr>
+                  <th className="p-4 border-b border-r border-blue-600/20 font-bold w-48 min-w-[180px] text-center bg-blue-500 text-white text-lg">人员信息</th>
+                  {dates.map((date) => {
+                    const d = new Date(date); const dayOfWeek = d.getDay(); const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                    return (<th key={date} className={`p-4 border-b border-blue-600/20 font-medium min-w-[140px] text-center bg-blue-500`}><div className={`text-lg font-bold ${isWeekend ? 'text-orange-200' : 'text-white'}`}>{daysMap[dayOfWeek]}</div><div className={`text-lg mt-1 font-mono font-semibold ${isWeekend ? 'text-orange-200' : 'text-white'} opacity-90`}>{d.getMonth() + 1}/{d.getDate()}</div></th>);
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredEmployees.length === 0 ? (<tr><td colSpan={8} className="p-12 text-center text-skin-muted">未找到人员</td></tr>) : (filteredEmployees.map(emp => (
+                  <tr 
+                    key={emp.id} 
+                    draggable={!filterName && filterAreas.length === 0} 
+                    onDragStart={(e) => handleRowDragStart(e, emp.id)}
+                    onDragOver={handleRowDragOver}
+                    onDrop={(e) => handleRowDrop(e, emp.id)}
+                    className={`hover:bg-skin-hover-fill transition-colors group ${draggedRowId === emp.id ? 'opacity-40 bg-blue-50' : ''}`}
+                    style={{ cursor: (!filterName && filterAreas.length === 0) ? 'move' : 'default' }}
+                  >
+                    <td className="p-3 border-b border-r border-skin-border bg-skin-fill">
+                      <div className="flex items-center gap-2">
+                        <div className={`text-skin-muted cursor-move hover:text-blue-500 ${(!filterName && filterAreas.length === 0) ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} title="拖动排序 (筛选状态下不可用)">
+                           <GripVertical className="w-4 h-4" />
+                        </div>
+                        <div className="flex items-center gap-3 justify-center flex-1">
+                          <div className="flex flex-col items-center">
+                            <div className="font-bold text-lg text-skin-base flex items-center gap-2 cursor-pointer hover:text-blue-500" onClick={() => handleEditEmployee(emp)}>
+                                {emp.name}
+                                <Edit3 className="w-3 h-3 opacity-0 group-hover:opacity-50 text-skin-muted" />
+                            </div>
+                            <div className="mt-1 flex flex-col items-center gap-0.5">
+                                <span className="text-xs font-extrabold text-blue-600 bg-blue-50/80 px-2 py-0.5 rounded border border-blue-200/50">
+                                   {emp.area}
+                                </span>
+                                <span className="text-[11px] text-skin-muted pl-0.5">
+                                   {emp.role}
+                                </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    {dates.map(date => {
+                      const entry = getShiftFor(emp.id, date); const shift = entry ? entry.shift : ShiftType.DAY;
+                      const hasBenches = entry?.benchIds && entry.benchIds.length > 0;
+                      return (
+                        <td key={date} className="p-2 border-b border-skin-border border-r border-skin-border/50 text-center relative">
+                          <button 
+                            onClick={() => handleCellClick(emp.id, date, shift, entry?.benchIds)} 
+                            className={`w-full h-20 max-h-20 rounded-lg border flex flex-col items-center justify-center gap-0.5 transition-all relative group/cell overflow-hidden group ${SHIFT_COLORS[shift]} ${shift !== ShiftType.OFF ? '' : 'opacity-80'}`}
+                          >
+                            {(shift === ShiftType.DAY || shift === ShiftType.NIGHT) && hasBenches ? (
+                              <div className="flex flex-col items-center w-full h-full py-1 px-1 overflow-hidden">
+                                  <div className="h-4 flex items-center justify-center shrink-0 mb-0.5"><span className="font-bold text-xs leading-none text-black">{SHIFT_LABELS[shift]}</span></div>
+                                  <div className={`flex-1 w-full overflow-hidden ${entry.benchIds.length <= 2 ? 'flex items-center justify-center gap-1' : 'grid grid-cols-3 gap-0.5 content-center'}`}>
+                                     {entry.benchIds.slice(0, 9).map(b => (
+                                       <div key={b} className={`flex items-center justify-center ${entry.benchIds.length === 1 ? 'px-3 py-1 text-xs' : (entry.benchIds.length === 2 ? 'w-[45%] py-0.5 text-[11px]' : 'w-full py-[1px] text-[10px]')} bg-white/90 rounded-[2px] border border-white/30 font-mono font-bold text-black truncate leading-tight`}>
+                                            {b}
+                                       </div>
+                                     ))}
+                                  </div>
+                              </div>
+                            ) : (<span className={`font-bold text-lg tracking-wide shrink-0 ${shift === ShiftType.OFF ? 'text-slate-500' : 'text-black'}`}>{SHIFT_LABELS[shift]}</span>)}
+                            
+                            <div className="absolute inset-0 bg-black/10 backdrop-blur-[1px] rounded-lg opacity-0 group-hover/cell:opacity-100 flex items-center justify-center transition-opacity pointer-events-none"><Edit3 className="w-5 h-5 text-white drop-shadow-md" /></div>
+                            
+                            {hasBenches && (
+                                <div 
+                                  className="absolute top-1 right-1 p-1 bg-white/20 hover:bg-white text-white hover:text-blue-600 rounded shadow-sm opacity-0 group-hover:opacity-100 transition-all z-10"
+                                  onClick={(e) => handleCopyBenches(e, entry.benchIds)}
+                                  title="复制台架"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </div>
+                            )}
+
+                            {benchClipboard && (
+                                <div 
+                                  className="absolute top-1 left-1 p-1 bg-white/20 hover:bg-white text-white hover:text-green-600 rounded shadow-sm opacity-0 group-hover:opacity-100 transition-all z-10"
+                                  onClick={(e) => handlePasteBenches(e, emp.id, date)}
+                                  title="粘贴台架"
+                                >
+                                  <ClipboardPaste className="w-3 h-3" />
+                                </div>
+                            )}
+                          </button>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </div>
+
+      {isConfigModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+           <div className="bg-skin-card border border-skin-border rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+             <div className="p-5 border-b border-skin-border flex justify-between items-center bg-skin-fill"><h3 className="text-xl font-bold">字段管理</h3><button onClick={() => setIsConfigModalOpen(false)}><X className="w-6 h-6"/></button></div>
+             <div className="overflow-y-auto p-6 space-y-8 bg-skin-card">
+                <section className="space-y-3"><div className="font-bold text-cyan-600">区域</div><div className="flex gap-2"><input className="flex-1 border rounded px-3 py-2" value={newAreaInput} onChange={e=>setNewAreaInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAddConfigItem('area',newAreaInput)}/><button onClick={()=>handleAddConfigItem('area',newAreaInput)} className="bg-cyan-600 text-white px-4 rounded">添加</button></div><div className="flex flex-wrap gap-2">{configAreas.map(i=><div key={i} className="border px-3 py-1 rounded flex items-center gap-2">{i}<button onClick={()=>handleDeleteConfigItem('area',i)}><X className="w-3 h-3"/></button></div>)}</div></section>
+                <section className="space-y-3"><div className="font-bold text-purple-600">角色</div><div className="flex gap-2"><input className="flex-1 border rounded px-3 py-2" value={newRoleInput} onChange={e=>setNewRoleInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAddConfigItem('role',newRoleInput)}/><button onClick={()=>handleAddConfigItem('role',newRoleInput)} className="bg-purple-600 text-white px-4 rounded">添加</button></div><div className="flex flex-wrap gap-2">{configRoles.map(i=><div key={i} className="border px-3 py-1 rounded flex items-center gap-2">{i}<button onClick={()=>handleDeleteConfigItem('role',i)}><X className="w-3 h-3"/></button></div>)}</div></section>
+                <section className="space-y-3"><div className="font-bold text-emerald-600">台架</div><div className="flex gap-2"><input className="flex-1 border rounded px-3 py-2" value={newBenchInput} onChange={e=>setNewBenchInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAddConfigItem('bench',newBenchInput)}/><button onClick={()=>handleAddConfigItem('bench',newBenchInput)} className="bg-emerald-600 text-white px-4 rounded">添加</button></div><div className="flex flex-wrap gap-2">{configBenches.map(i=><div key={i} className="border px-3 py-1 rounded flex items-center gap-2">{i}<button onClick={()=>handleDeleteConfigItem('bench',i)}><X className="w-3 h-3"/></button></div>)}</div></section>
+             </div>
+           </div>
+        </div>
+      )}
+
+      {isAutoModalOpen && (
+         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-md p-4 animate-in zoom-in-95 duration-200">
+            <div className="bg-skin-card rounded-xl shadow-2xl border border-skin-border w-full max-w-md overflow-hidden">
+               <div className="p-6 border-b border-skin-border bg-gradient-to-r from-purple-500/10 to-indigo-500/10">
+                  <h3 className="text-xl font-bold text-skin-base flex items-center gap-2">
+                     <Sparkles className="w-6 h-6 text-purple-500" />
+                     智能自动排班
+                  </h3>
+                  <p className="text-sm text-skin-muted mt-1">根据规则自动生成未来的排班计划</p>
+               </div>
+               <div className="p-6 space-y-6">
+                  <div className="space-y-2">
+                     <label className="text-sm font-bold text-skin-base">1. 选择排班类型</label>
+                     <div className="grid grid-cols-2 gap-3">
+                        <button onClick={()=>setAutoType('night')} className={`p-3 rounded-lg border flex flex-col items-center gap-2 transition-all ${autoType==='night'?'bg-purple-50 border-purple-500 text-purple-700':'hover:bg-skin-fill text-skin-muted'}`}><Moon className="w-6 h-6" /><span className="font-bold">晚班轮换</span></button>
+                        <button onClick={()=>setAutoType('weekend')} className={`p-3 rounded-lg border flex flex-col items-center gap-2 transition-all ${autoType==='weekend'?'bg-indigo-50 border-indigo-500 text-indigo-700':'hover:bg-skin-fill text-skin-muted'}`}><Sun className="w-6 h-6" /><span className="font-bold">周末加班</span></button>
+                     </div>
+                  </div>
+                  <div className="space-y-2">
+                     <label className="text-sm font-bold text-skin-base">2. 选择目标区域</label>
+                     <select value={autoTargetArea} onChange={(e)=>setAutoTargetArea(e.target.value)} className="w-full p-2 border rounded-lg bg-skin-fill"><option value="所有区域">所有区域 (全局轮换)</option>{configAreas.map(area => <option key={area} value={area}>{area}</option>)}</select>
+                  </div>
+                  {autoType === 'night' && (
+                     <div className="space-y-2 animate-in slide-in-from-left-2">
+                        <label className="text-sm font-bold text-skin-base">3. 轮换周期</label>
+                        <div className="flex gap-3"><button onClick={()=>setAutoCycle('1')} className={`flex-1 py-2 rounded border text-sm font-medium ${autoCycle==='1'?'bg-purple-600 text-white':'hover:bg-skin-fill'}`}>1周一换</button><button onClick={()=>setAutoCycle('2')} className={`flex-1 py-2 rounded border text-sm font-medium ${autoCycle==='2'?'bg-purple-600 text-white':'hover:bg-skin-fill'}`}>2周一换</button></div>
+                     </div>
+                  )}
+                  <div className="space-y-2"><label className="text-sm font-bold text-skin-base">4. 开始日期</label><input type="date" className="w-full p-2 border rounded-lg bg-skin-fill" value={autoStartDate} onChange={(e)=>setAutoStartDate(e.target.value)}/></div>
+               </div>
+               <div className="p-5 border-t border-skin-border bg-skin-fill flex justify-end gap-3"><button onClick={()=>setIsAutoModalOpen(false)} className="px-4 py-2 rounded text-skin-muted hover:text-skin-base">取消</button><button onClick={handleAutoGenerator} className="px-6 py-2 rounded bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold shadow-lg flex items-center gap-2"><Zap className="w-4 h-4" /> 开始生成</button></div>
+            </div>
+         </div>
+      )}
+
+      {isEditModalOpen && editingCell && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-skin-card border border-skin-border rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-skin-border flex justify-between items-center bg-skin-fill"><h3 className="text-xl font-bold text-skin-base">调整班次</h3><button onClick={() => setIsEditModalOpen(false)}><X className="w-6 h-6" /></button></div>
+            <div className="p-6 overflow-y-auto bg-skin-card">
+              <div className="mb-6 grid grid-cols-3 gap-3">{Object.entries(SHIFT_LABELS).map(([key, label]) => (<button key={key} onClick={() => setTempShift(key)} className={`p-3 rounded-xl border ${tempShift === key ? 'bg-blue-600 border-[#FFC107] text-white' : 'bg-skin-card'}`}>{label}</button>))}</div>
+              {(tempShift === ShiftType.DAY || tempShift === ShiftType.NIGHT) && (
+                <div>
+                  <div className="flex justify-between items-end mb-3"><div className="text-sm font-semibold">分配台架</div>{!isAddingBench ? (<button onClick={() => setIsAddingBench(true)} className="text-xs text-blue-600 flex items-center"><Plus className="w-3 h-3" /> 自定义</button>) : (<div className="flex items-center gap-2"><input autoFocus className="border rounded px-2 py-0.5 text-xs w-24" value={customBench} onChange={e => setCustomBench(e.target.value)} onKeyDown={e => {if(e.key==='Enter'&&customBench){toggleBenchSelection(customBench);setIsAddingBench(false);setCustomBench('')}}} /><button onClick={() => setIsAddingBench(false)}><X className="w-3 h-3"/></button></div>)}</div>
+                  <div className="bg-skin-fill rounded-xl border p-4 max-h-60 overflow-y-auto flex flex-wrap gap-2">
+                    {displayBenches.map(bench => (<button key={bench} onClick={() => toggleBenchSelection(bench)} className={`px-3 py-1.5 rounded-lg text-sm border flex items-center gap-2 ${tempBenchIds.includes(bench) ? 'bg-cyan-100 border-cyan-500 text-cyan-800' : 'bg-skin-card'}`}>{bench}{tempBenchIds.includes(bench) && <Check className="w-3 h-3" />}</button>))}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="p-5 border-t border-skin-border bg-skin-fill flex justify-end gap-3"><button onClick={() => setIsEditModalOpen(false)} className="px-5 py-2.5 rounded-lg text-skin-muted hover:bg-skin-hover-fill">取消</button><button onClick={handleSaveShift} className="px-6 py-2.5 rounded-lg bg-blue-600 text-white font-medium">确认</button></div>
+          </div>
+        </div>
+      )}
+
+      {isEmpModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-skin-card border border-skin-border rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="p-5 border-b border-skin-border flex justify-between items-center bg-skin-fill"><h3 className="text-xl font-bold text-skin-base">{editingEmp ? '编辑' : '新增'}人员</h3><button onClick={() => setIsEmpModalOpen(false)}><X className="w-6 h-6" /></button></div>
+            <div className="p-6 space-y-5 bg-skin-card">
+              <div className="space-y-2"><label className="text-sm">姓名</label><input className="w-full border rounded-lg p-3" value={tempEmpData.name||''} onChange={e => setTempEmpData(p => ({...p, name:e.target.value}))} /></div>
+              <div className="space-y-2"><label className="text-sm">区域</label><select className="w-full border rounded-lg p-3" value={tempEmpData.area||''} onChange={e => setTempEmpData(p => ({...p, area:e.target.value}))}>{configAreas.map(a => <option key={a} value={a}>{a}</option>)}</select></div>
+              <div className="space-y-2"><label className="text-sm">职级</label><select className="w-full border rounded-lg p-3" value={tempEmpData.role||''} onChange={e => setTempEmpData(p => ({...p, role:e.target.value}))}>{configRoles.map(r => <option key={r} value={r}>{r}</option>)}</select></div>
+            </div>
+            <div className="p-5 border-t border-skin-border bg-skin-fill flex justify-between items-center">
+              {editingEmp ? <button onClick={(e) => executeDeleteEmployee(editingEmp.id, editingEmp.name, e)} className="text-red-600 flex items-center gap-2"><Trash2 className="w-4 h-4"/>删除</button> : <div/>}
+              <div className="flex gap-3"><button onClick={() => setIsEmpModalOpen(false)} className="px-5 py-2.5 rounded-lg hover:bg-skin-hover-fill">取消</button><button onClick={handleSaveEmployee} className="px-6 py-2.5 rounded-lg bg-blue-600 text-white">保存</button></div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-skin-card border border-skin-border rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="p-5 border-b border-skin-border flex justify-between items-center bg-skin-fill">
+              <h3 className="text-xl font-bold text-skin-base flex items-center gap-2"><Upload className="w-5 h-5 text-skin-muted" />导入人员</h3>
+              <button onClick={() => setIsImportModalOpen(false)} className="text-skin-muted hover:text-skin-base transition-colors"><X className="w-6 h-6" /></button>
+            </div>
+            <div className="p-6 bg-skin-card space-y-4">
+               <p className="text-sm text-skin-muted">请输入人员姓名，支持批量输入。姓名之间可用逗号、空格或换行分隔。</p>
+               <textarea className="w-full h-40 bg-skin-fill border border-skin-border rounded-lg p-3 text-skin-base focus:border-blue-500 focus:ring-2 focus:ring-blue-100 outline-none resize-none font-mono text-sm" placeholder={`张三\n李四\n王五`} value={importText} onChange={e => setImportText(e.target.value)} />
+            </div>
+            <div className="p-5 border-t border-skin-border bg-skin-fill flex justify-end gap-3"><button onClick={() => setIsImportModalOpen(false)} className="px-5 py-2.5 rounded-lg text-skin-muted hover:bg-skin-hover-fill transition-colors">取消</button><button onClick={handleBulkImport} disabled={!importText.trim()} className="px-6 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium shadow-lg shadow-blue-200 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">开始导入</button></div>
+          </div>
+        </div>
+      )}
+
+      {isStatsModalOpen && (
+         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-md p-4">
+            <div className="bg-skin-card border border-skin-border rounded-2xl shadow-2xl w-full max-w-[90vw] h-[90vh] flex flex-col overflow-hidden">
+               <div className="p-6 border-b border-skin-border flex justify-between items-center bg-skin-card shrink-0">
+                  <h3 className="text-xl font-extrabold">统计报表</h3>
+                  <div className="flex gap-3"><button onClick={handleExportCSV} className="border px-4 py-2 rounded flex gap-2 hover:bg-skin-fill"><FileSpreadsheet className="w-4 h-4"/>导出Excel</button><button onClick={() => setIsStatsModalOpen(false)}><X className="w-6 h-6"/></button></div>
+               </div>
+               <div className="flex-1 overflow-hidden flex flex-col bg-skin-fill">
+                  {statsSummary && (
+                    <div className="p-6 grid grid-cols-1 md:grid-cols-4 gap-4 shrink-0">
+                       <div className="bg-skin-card p-4 rounded border shadow-sm"><p className="text-sm text-muted">总人天</p><p className="text-2xl font-bold">{statsSummary.totalManDays}</p></div>
+                       <div className="bg-[#4CAF50]/10 p-4 rounded border border-[#4CAF50]/20"><p className="text-sm text-[#2E7D32]">白班占比</p><p className="text-2xl font-bold text-[#2E7D32]">{statsSummary.dayRate}%</p></div>
+                       <div className="bg-[#9C27B0]/10 p-4 rounded border border-[#9C27B0]/20"><p className="text-sm text-[#7B1FA2]">夜班占比</p><p className="text-2xl font-bold text-[#7B1FA2]">{statsSummary.nightRate}%</p></div>
+                       <div className="bg-[#F44336]/10 p-4 rounded border border-[#F44336]/20"><p className="text-sm text-[#C62828]">请假率</p><p className="text-2xl font-bold text-[#C62828]">{statsSummary.leaveRate}%</p></div>
+                    </div>
+                  )}
+                  <div className="px-6 py-3 flex gap-4 border-y border-skin-border bg-skin-card shrink-0">
+                      <div className="flex bg-skin-fill rounded p-1 border">{['month','quarter','year'].map(d=><button key={d} onClick={()=>setStatsDimension(d)} className={`px-3 py-1 rounded ${statsDimension===d?'bg-skin-card shadow':''}`}>{{month:'月',quarter:'季',year:'年'}[d]}</button>)}</div>
+                      <select value={statsYear} onChange={e=>setStatsYear(Number(e.target.value))} className="border rounded px-2">{Array.from({length:5},(_,i)=>new Date().getFullYear()-2+i).map(y=><option key={y} value={y}>{y}年</option>)}</select>
+                      {statsDimension==='month'&&<select value={statsMonth} onChange={e=>setStatsMonth(Number(e.target.value))} className="border rounded px-2">{Array.from({length:12},(_,i)=>i+1).map(m=><option key={m} value={m}>{m}月</option>)}</select>}
+                  </div>
+                  <div className="flex-1 overflow-hidden flex flex-col md:flex-row p-6 gap-6">
+                      <div className="flex-[2] bg-skin-card rounded border shadow-sm overflow-hidden flex flex-col">
+                         <div className="p-4 border-b font-bold">明细列表 <span className="text-xs font-normal text-muted">共 {statisticsData.length} 人</span></div>
+                         <div className="flex-1 overflow-auto">
+                            <table className="w-full text-left border-collapse text-sm">
+                               <thead className="bg-skin-fill sticky top-0">
+                                  <tr>{['姓名','区域','白班','夜班','出勤','外勤','请假','周末加班','总计'].map(h=><th key={h} className="p-3 border-b">{h}</th>)}</tr>
+                               </thead>
+                               <tbody>
+                                  {statisticsData.map(row=>(
+                                    <tr key={row.id} className="hover:bg-blue-50/10">
+                                       <td className="p-3 text-blue-500 cursor-pointer" onClick={()=>setSelectedPersonStats({emp:employees.find(e=>e.id===row.id),entries:row.entries})}>{row.name}</td>
+                                       <td className="p-3 text-muted">{row.area}</td>
+                                       <td className="p-3 font-bold text-[#4CAF50]">{row.dayShift}</td>
+                                       <td className="p-3 font-bold text-[#9C27B0]">{row.nightShift}</td>
+                                       <td className="p-3 font-bold text-[#FFC107]">{row.trip}</td>
+                                       <td className="p-3 font-bold text-[#9C27B0]">{row.fieldWork}</td>
+                                       <td className="p-3 font-bold text-[#F44336]">{row.leave}</td>
+                                       <td className="p-3 font-bold text-orange-500">{row.weekendOvertime}</td>
+                                       <td className="p-3 font-bold">{row.total}</td>
+                                    </tr>
+                                  ))}
+                               </tbody>
+                            </table>
+                         </div>
+                      </div>
+                      <div className="flex-1 bg-skin-card rounded border p-4 flex flex-col">
+                         <h4 className="font-bold mb-4">分布图</h4>
+                         <div className="flex-1">
+                            <ResponsiveContainer width="100%" height="100%">
+                               <PieChart>
+                                  <Pie data={statsSummary?.distribution||[]} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, value, percent }) => `${name} ${value} (${(percent * 100).toFixed(0)}%)`} labelLine={true} onClick={(d)=>setStatsSelectedChartSegment(d.type===statsSelectedChartSegment?null:d.type)} cursor="pointer">
+                                     {statsSummary?.distribution.map((e,i)=><Cell key={i} fill={e.fill} opacity={statsSelectedChartSegment&&statsSelectedChartSegment!==e.type?0.3:1}/>)}
+                                  </Pie>
+                                  <RechartsTooltip/>
+                               </PieChart>
+                            </ResponsiveContainer>
+                         </div>
+                      </div>
+                  </div>
+               </div>
+            </div>
+         </div>
+      )}
+
+      {selectedPersonStats && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+           <div className="bg-skin-card rounded-xl shadow-2xl border w-full max-w-lg max-h-[700px] flex flex-col">
+              <div className="p-4 border-b flex justify-between items-center bg-skin-fill">
+                 <div><h3 className="font-bold text-lg">{selectedPersonStats.emp.name}</h3><p className="text-xs text-muted">排班明细</p></div>
+                 <button onClick={()=>setSelectedPersonStats(null)}><X className="w-5 h-5"/></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-0">
+                 <table className="w-full text-left text-sm">
+                    <thead className="bg-skin-fill sticky top-0"><tr><th className="p-3 border-b">日期</th><th className="p-3 border-b">班次</th><th className="p-3 border-b">备注</th></tr></thead>
+                    <tbody>
+                       {selectedPersonStats.entries.sort((a,b)=>a.date.localeCompare(b.date)).map((e,i)=>(
+                         <tr key={i} className="hover:bg-skin-fill">
+                            <td className="p-3 font-mono">{e.date}</td>
+                            <td className="p-3"><span className="px-2 py-1 rounded text-xs text-white" style={{backgroundColor:STATS_COLORS[e.shift]}}>{SHIFT_LABELS[e.shift]}</span></td>
+                            <td className="p-3 text-xs">{e.benchIds?.join(',')||e.location}</td>
+                         </tr>
+                       ))}
+                    </tbody>
+                 </table>
+              </div>
+           </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
